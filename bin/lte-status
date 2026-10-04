@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Print the cellular modem and connection state as one JSON object.
+
+Data comes from ModemManager (mmcli) and NetworkManager (nmcli). It works
+with any ModemManager modem; signal values come from the extended signal
+interface (on XMM7360 that is +XCESQ), because the generic signal quality
+reads 0% on LTE for this modem.
+"""
+import json
+import subprocess
+
+SIGNAL_RATE = "15"
+
+
+def run(*cmd):
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+        return out.stdout if out.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def run_json(*cmd):
+    try:
+        return json.loads(run(*cmd) or "{}")
+    except ValueError:
+        return {}
+
+
+def num(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def quality_from_rsrp(rsrp):
+    # Typical LTE RSRP scale: -80 dBm and above is excellent, -120 dBm is the edge.
+    if rsrp is None:
+        return None
+    return max(0, min(100, round((rsrp + 120) * 100 / 40)))
+
+
+def nm_connections():
+    """Return the GSM profiles and the name of the active one."""
+    profiles, active = [], ""
+    for line in run("nmcli", "-t", "-f", "NAME,TYPE,ACTIVE", "connection", "show").splitlines():
+        parts = line.rsplit(":", 2)
+        if len(parts) != 3 or parts[1] != "gsm":
+            continue
+        name = parts[0].replace("\\:", ":")
+        profiles.append(name)
+        if parts[2] == "yes":
+            active = name
+    return profiles, active
+
+
+def main():
+    status = {"present": False}
+    profiles, active = nm_connections()
+    status["profiles"] = profiles
+    status["connection"] = active or (profiles[0] if profiles else "")
+    status["active"] = bool(active)
+
+    modems = run_json("mmcli", "-L", "-J").get("modem-list") or []
+    if not modems:
+        print(json.dumps(status))
+        return
+
+    path = modems[0]
+    modem = run_json("mmcli", "-m", path, "-J").get("modem") or {}
+    generic = modem.get("generic") or {}
+    gpp = modem.get("3gpp") or {}
+
+    status.update({
+        "present": True,
+        "state": generic.get("state", ""),
+        "failedReason": generic.get("state-failed-reason", "--"),
+        "powerState": generic.get("power-state", ""),
+        "accessTech": ",".join(generic.get("access-technologies") or []),
+        "operator": gpp.get("operator-name", "--"),
+        "operatorId": gpp.get("operator-code", "--"),
+        "registration": gpp.get("registration-state", "--"),
+        # Some firmwares report the model as '"L850 LTE Module","L850"'.
+        "model": generic.get("model", "").split('","')[0].strip('"'),
+    })
+
+    signal = (run_json("mmcli", "-m", path, "--signal-get", "-J").get("modem") or {}).get("signal") or {}
+    if (signal.get("refresh") or {}).get("rate") in (None, "0"):
+        # Polling is off until someone enables it; this needs an active local session.
+        run("mmcli", "-m", path, "--signal-setup=" + SIGNAL_RATE)
+    lte = signal.get("lte") or {}
+    rsrp, rsrq, snr = num(lte.get("rsrp")), num(lte.get("rsrq")), num(lte.get("snr"))
+    quality = quality_from_rsrp(rsrp)
+    if quality is None and "lte" not in (generic.get("access-technologies") or []):
+        # The generic value is meaningful on 2G/3G only; on LTE it reads 0%.
+        quality = num((generic.get("signal-quality") or {}).get("value"))
+    status.update({"rsrp": rsrp, "rsrq": rsrq, "snr": snr, "quality": quality})
+
+    ip, iface = "", ""
+    for bearer_path in generic.get("bearers") or []:
+        bearer = run_json("mmcli", "-b", bearer_path, "-J").get("bearer") or {}
+        if (bearer.get("status") or {}).get("connected") == "yes":
+            ip = (bearer.get("ipv4-config") or {}).get("address", "")
+            iface = (bearer.get("status") or {}).get("interface", "")
+            break
+    status.update({"ip": "" if ip == "--" else ip, "interface": "" if iface == "--" else iface})
+
+    print(json.dumps(status))
+
+
+if __name__ == "__main__":
+    main()
