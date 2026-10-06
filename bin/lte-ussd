@@ -20,7 +20,10 @@ import subprocess
 import sys
 import time
 
-STATE_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "lte-ussd-modes.json")
+# On disk rather than in /run: the modem keeps its mode across reboots, so the
+# original mode must survive them too (lte-status restores a stale one).
+STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "omarchy-lte")
+STATE_FILE = os.path.join(STATE_DIR, "ussd-modes.json")
 CS_WAIT_SEC = 90
 STABLE_POLLS = 3
 RETRIES = 2
@@ -128,6 +131,7 @@ def switch_to_3g(path, info):
     if not allowed:
         return "Couldn't read the current network modes"
     if not os.path.exists(STATE_FILE):
+        os.makedirs(STATE_DIR, exist_ok=True)
         with open(STATE_FILE, "w") as f:
             json.dump({"allowed": allowed, "preferred": preferred}, f)
     code, _, err = run("mmcli", "-m", path, "--set-allowed-modes=3g")

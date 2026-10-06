@@ -8,9 +8,14 @@ interface (on XMM7360 that is +XCESQ), because the generic signal quality
 reads 0% on LTE for this modem.
 """
 import json
+import os
 import subprocess
+import time
 
 SIGNAL_RATE = "15"
+USSD_STATE = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+                          "omarchy-lte", "ussd-modes.json")
+STALE_USSD_SEC = 180
 
 
 def run(*cmd):
@@ -57,6 +62,21 @@ def nm_connections():
     return profiles, active, autoconnect
 
 
+def recover_stale_ussd():
+    """A USSD run that died midway (modem crash, reboot) leaves the modem on 3G.
+    If its saved original mode is older than a few minutes and no lte-ussd is
+    running, let lte-ussd --cancel put the original mode back."""
+    try:
+        age = time.time() - os.path.getmtime(USSD_STATE)
+    except OSError:
+        return
+    if age < STALE_USSD_SEC or run("pgrep", "-f", "bin/lte-ussd"):
+        return
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lte-ussd")
+    subprocess.Popen([helper, "--cancel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
 def main():
     status = {"present": False}
     profiles, active, autoconnect = nm_connections()
@@ -90,6 +110,13 @@ def main():
         # Some firmwares report the model as '"L850 LTE Module","L850"'.
         "model": generic.get("model", "").split('","')[0].strip('"'),
     })
+
+    # Network mode: "allowed: 3g, 4g; preferred: 4g" -> allowed "3g|4g", preferred "4g"
+    modes = generic.get("current-modes", "")
+    allowed = modes.split(";")[0].replace("allowed:", "").strip().replace(", ", "|") if modes else ""
+    preferred = modes.split("preferred:")[1].strip() if "preferred:" in modes else ""
+    status.update({"allowedModes": allowed, "preferredMode": preferred})
+    recover_stale_ussd()
 
     signal = (run_json("mmcli", "-m", path, "--signal-get", "-J").get("modem") or {}).get("signal") or {}
     if (signal.get("refresh") or {}).get("rate") in (None, "0"):

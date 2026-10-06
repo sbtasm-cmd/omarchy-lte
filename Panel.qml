@@ -97,6 +97,21 @@ Panel {
     actionProc.running = true
   }
 
+  // ---------- Network mode ----------
+  readonly property string modeKey: info.allowedModes === "4g" ? "4g"
+    : info.allowedModes === "3g" ? "3g"
+    : (info.allowedModes || "").indexOf("4g") >= 0 ? "auto" : ""
+
+  function setMode(key) {
+    if (busy || !present || key === modeKey) return
+    busy = true
+    lastError = ""
+    var args = key === "auto" ? ["--set-allowed-modes=3g|4g", "--set-preferred-mode=4g"]
+      : ["--set-allowed-modes=" + key]
+    actionProc.command = ["mmcli", "-m", "any"].concat(args)
+    actionProc.running = true
+  }
+
   // ---------- USSD (bin/lte-ussd: temporarily uses 3G, where the CS domain is available) ----------
   property bool ussdBusy: false
   property bool ussdActive: false
@@ -496,6 +511,48 @@ Panel {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             onToggled: root.setDataRoaming(!root.info.dataRoaming)
+          }
+        }
+
+        // ---------- Network mode ----------
+        Item {
+          visible: root.present
+          width: parent.width
+          implicitHeight: modeRow.implicitHeight
+
+          InfoLabel {
+            text: "Network mode"
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          Row {
+            id: modeRow
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(4)
+
+            Repeater {
+              model: [
+                { key: "auto", label: "Auto", tip: "3G + 4G, prefer 4G" },
+                { key: "4g", label: "4G", tip: "LTE only" },
+                { key: "3g", label: "3G", tip: "3G only" }
+              ]
+              Button {
+                required property var modelData
+                text: modelData.label
+                tooltipText: modelData.tip
+                active: root.modeKey === modelData.key
+                enabled: !root.busy && !root.ussdBusy
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.font.bodySmall
+                bordered: true
+                horizontalPadding: Style.spacing.controlPaddingX
+                verticalPadding: Style.spacing.controlPaddingY
+                onClicked: root.setMode(modelData.key)
+              }
+            }
           }
         }
 
