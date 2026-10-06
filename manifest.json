@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "xmm7360.lte",
   "name": "LTE",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Nohdan S.",
   "license": "GPL-2.0-or-later",
   "description": "Cellular modem status, LTE signal, and a mobile data switch in the Omarchy bar (ModemManager + NetworkManager).",

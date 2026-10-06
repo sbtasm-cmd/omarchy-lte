@@ -4,7 +4,9 @@ An [Omarchy](https://omarchy.org/) bar widget for cellular modems, built on
 ModemManager and NetworkManager.
 
 - **Bar icon:** 1–3 signal bars computed from the real LTE RSRP. Many modems report 0% "signal quality" on LTE, so the icon doesn't use that value.
-- **Popup:** operator and access technology, registration, a signal bar, RSRP/RSRQ/SNR, the IP address, the active NetworkManager profile, the modem model, and a **mobile data** switch.
+- **Popup:** operator and access technology, registration, a signal bar, RSRP/RSRQ/SNR, the IP address, the active NetworkManager profile, whether it connects at boot, the modem model, and a **mobile data** switch.
+- **Mobile data switch:** also sets the profile's `autoconnect` flag, so the on/off state survives a reboot.
+- **Speed test (`󰓅`):** the same dials as the Omarchy Wi-Fi speed test (fast.com, 5 s each way), with all traffic forced through the modem interface, so it measures the mobile link even while Wi-Fi is the default route. One run uses roughly 10–20 MB of mobile data.
 - **Clicks:** left opens the popup, right toggles mobile data, middle refreshes.
 
 It works with any modem that ModemManager drives. It was written for the Intel
@@ -26,7 +28,7 @@ right section of the bar. Move it with `omarchy bar move xmm7360.lte ...`.
   ```sh
   sudo nmcli connection add type gsm ifname '*' con-name lte gsm.apn <your-apn> connection.autoconnect yes
   ```
-- Python 3, for `bin/lte-status`, which collects the state as JSON.
+- Python 3, for `bin/lte-status`, which collects the state as JSON. `curl` and `jq` for `bin/lte-speedtest`.
 - Use from the local graphical session: polkit allows mobile data control and signal polling setup (`mmcli --signal-setup`) only for the active local session.
 
 ## Settings

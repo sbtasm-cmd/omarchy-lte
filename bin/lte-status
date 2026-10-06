@@ -43,25 +43,27 @@ def quality_from_rsrp(rsrp):
 
 
 def nm_connections():
-    """Return the GSM profiles and the name of the active one."""
-    profiles, active = [], ""
-    for line in run("nmcli", "-t", "-f", "NAME,TYPE,ACTIVE", "connection", "show").splitlines():
-        parts = line.rsplit(":", 2)
-        if len(parts) != 3 or parts[1] != "gsm":
+    """Return the GSM profiles, the active one, and each profile's autoconnect flag."""
+    profiles, active, autoconnect = [], "", {}
+    for line in run("nmcli", "-t", "-f", "NAME,TYPE,ACTIVE,AUTOCONNECT", "connection", "show").splitlines():
+        parts = line.rsplit(":", 3)
+        if len(parts) != 4 or parts[1] != "gsm":
             continue
         name = parts[0].replace("\\:", ":")
         profiles.append(name)
+        autoconnect[name] = parts[3] == "yes"
         if parts[2] == "yes":
             active = name
-    return profiles, active
+    return profiles, active, autoconnect
 
 
 def main():
     status = {"present": False}
-    profiles, active = nm_connections()
+    profiles, active, autoconnect = nm_connections()
     status["profiles"] = profiles
     status["connection"] = active or (profiles[0] if profiles else "")
     status["active"] = bool(active)
+    status["autoconnect"] = autoconnect.get(status["connection"], False)
 
     modems = run_json("mmcli", "-L", "-J").get("modem-list") or []
     if not modems:
