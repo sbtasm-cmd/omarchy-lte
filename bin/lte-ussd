@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Run a USSD request through ModemManager and print the result as JSON.
+
+Some networks register a data-centric LTE modem as "SMS only" (CREG stat 6),
+which leaves it without the CS domain, so every USSD request is terminated
+by the network. This script temporarily restricts the modem to 3G, where
+the CS domain is available, sends the request, and restores the original
+mode once the USSD session is over. Data keeps flowing over 3G meanwhile.
+
+Usage:
+  lte-ussd CODE          start a session, for example '*111#'
+  lte-ussd --respond X   answer an interactive menu
+  lte-ussd --cancel      end the session
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+STATE_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "lte-ussd-modes.json")
+CS_WAIT_SEC = 90
+STABLE_POLLS = 3
+RETRIES = 2
+RETRY_DELAY_SEC = 5
+LTE_WAIT_SEC = 30
+TWO_G_THREE_G = ("gsm", "gprs", "edge", "umts", "hsdpa", "hsupa", "hspa", "hspa-plus")
+
+
+def run(*cmd, timeout=40):
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return out.returncode, out.stdout.strip(), out.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return 1, "", "timed out: " + " ".join(cmd)
+
+
+def mmcli_json(*args):
+    code, out, _ = run("mmcli", *args, "-J")
+    try:
+        return json.loads(out) if code == 0 else {}
+    except ValueError:
+        return {}
+
+
+def modem_path():
+    modems = mmcli_json("-L").get("modem-list") or []
+    return modems[0] if modems else None
+
+
+def modem_info(path):
+    return mmcli_json("-m", path).get("modem") or {}
+
+
+def parse_modes(text):
+    """'allowed: 3g, 4g; preferred: 4g' -> ('3g|4g', '4g')."""
+    m = re.match(r"allowed: ([^;]+); preferred: (\S+)", text or "")
+    if not m:
+        return None, None
+    allowed = "|".join(x.strip() for x in m.group(1).split(","))
+    return allowed, m.group(2)
+
+
+def finish(result):
+    print(json.dumps(result, ensure_ascii=False))
+    sys.exit(0 if result.get("ok") else 1)
+
+
+def ussd_state(path):
+    ussd = (mmcli_json("-m", path, "--3gpp-ussd-status").get("modem") or {}).get("3gpp", {}).get("ussd", {})
+    return ussd.get("status", "")
+
+
+def wait_for(path, predicate, timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(2)
+        m = modem_info(path)
+        if predicate((m.get("3gpp") or {}).get("registration-state", ""),
+                     (m.get("generic") or {}).get("access-technologies") or []):
+            return True
+    return False
+
+
+def set_modes(path, allowed, preferred):
+    args = ["mmcli", "-m", path, "--set-allowed-modes=" + allowed]
+    if preferred and preferred != "none":
+        args.append("--set-preferred-mode=" + preferred)
+    code, _, err = run(*args)
+    return None if code == 0 else (err or "couldn't set modes")
+
+
+def restore_modes(path, saved=None):
+    """Put the original modes back. With 4G allowed, briefly force 4G only
+    first: from a 3G (often roaming) cell the modem doesn't reselect LTE on
+    its own, and "preferred: 4g" only matters during a fresh network search."""
+    if saved is None:
+        try:
+            with open(STATE_FILE) as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            return None
+        os.unlink(STATE_FILE)
+    if "4g" in saved["allowed"].split("|"):
+        if set_modes(path, "4g", None) is None:
+            wait_for(path, lambda reg, techs: reg in ("home", "roaming") and "lte" in techs, LTE_WAIT_SEC)
+    return set_modes(path, saved["allowed"], saved.get("preferred"))
+
+
+def back_to_lte(path):
+    """Return to LTE when the modem sits on 3G although 4G is allowed."""
+    generic = modem_info(path).get("generic") or {}
+    allowed, preferred = parse_modes(generic.get("current-modes", ""))
+    if not allowed or "4g" not in allowed.split("|") or "lte" in (generic.get("access-technologies") or []):
+        return None
+    return restore_modes(path, {"allowed": allowed, "preferred": preferred})
+
+
+def switch_to_3g(path, info):
+    """Restrict the modem to 3G and wait for CS-capable registration."""
+    generic = info.get("generic") or {}
+    techs = generic.get("access-technologies") or []
+    if techs and all(t in TWO_G_THREE_G for t in techs):
+        return None
+    allowed, preferred = parse_modes(generic.get("current-modes", ""))
+    if not allowed:
+        return "Couldn't read the current network modes"
+    if not os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "w") as f:
+            json.dump({"allowed": allowed, "preferred": preferred}, f)
+    code, _, err = run("mmcli", "-m", path, "--set-allowed-modes=3g")
+    if code != 0:
+        os.unlink(STATE_FILE)
+        return err or "Couldn't switch to 3G"
+    # Registration flaps (home -> registering -> sms-only -> ...) right after
+    # the mode change, so require a few consecutive stable 2G/3G readings.
+    deadline, stable = time.time() + CS_WAIT_SEC, 0
+    while time.time() < deadline:
+        time.sleep(2)
+        m = modem_info(path)
+        reg = (m.get("3gpp") or {}).get("registration-state", "")
+        techs = (m.get("generic") or {}).get("access-technologies") or []
+        stable = stable + 1 if reg in ("home", "roaming") and any(t in TWO_G_THREE_G for t in techs) else 0
+        if stable >= STABLE_POLLS:
+            return None
+    restore_modes(path)
+    return "No 3G network found for USSD"
+
+
+def reply_from(out):
+    m = re.search(r"reply from network: '(.*)'\s*$", out, re.S)
+    return m.group(1) if m else out
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        finish({"ok": False, "error": "usage: lte-ussd CODE | --respond TEXT | --cancel"})
+
+    path = modem_path()
+    if not path:
+        finish({"ok": False, "error": "No modem"})
+
+    if args[0] == "--cancel":
+        run("mmcli", "-m", path, "--3gpp-ussd-cancel")
+        err = restore_modes(path) if os.path.exists(STATE_FILE) else back_to_lte(path)
+        finish({"ok": err is None, "reply": "", "sessionActive": False, "error": err or ""})
+
+    if args[0] == "--respond":
+        if len(args) < 2:
+            finish({"ok": False, "error": "--respond needs a value"})
+        code, out, err = run("mmcli", "-m", path, "--3gpp-ussd-respond=" + args[1], timeout=60)
+    else:
+        err = switch_to_3g(path, modem_info(path))
+        if err:
+            finish({"ok": False, "error": err})
+        for attempt in range(RETRIES + 1):
+            code, out, err = run("mmcli", "-m", path, "--3gpp-ussd-initiate=" + args[0], timeout=60)
+            # The CS domain can come up a few seconds after registration.
+            if code == 0 or "terminated by network" not in (err + out) or attempt == RETRIES:
+                break
+            time.sleep(RETRY_DELAY_SEC)
+
+    active = code == 0 and ussd_state(path) == "user-response"
+    result = {"ok": code == 0, "reply": reply_from(out) if code == 0 else "",
+              "sessionActive": active, "error": "" if code == 0 else (err or out)}
+    if not active:
+        restore_err = restore_modes(path) if os.path.exists(STATE_FILE) else back_to_lte(path)
+        if restore_err:
+            result["error"] = (result["error"] + "; " if result["error"] else "") + "restore: " + restore_err
+    finish(result)
+
+
+if __name__ == "__main__":
+    main()

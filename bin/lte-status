@@ -64,6 +64,9 @@ def main():
     status["connection"] = active or (profiles[0] if profiles else "")
     status["active"] = bool(active)
     status["autoconnect"] = autoconnect.get(status["connection"], False)
+    # gsm.home-only=yes forbids mobile data while roaming.
+    home_only = run("nmcli", "-g", "gsm.home-only", "connection", "show", "id", status["connection"]).strip() if status["connection"] else ""
+    status["dataRoaming"] = home_only == "no"
 
     modems = run_json("mmcli", "-L", "-J").get("modem-list") or []
     if not modems:

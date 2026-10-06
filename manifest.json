@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "xmm7360.lte",
   "name": "LTE",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Nohdan S.",
   "license": "GPL-2.0-or-later",
-  "description": "Cellular modem status, LTE signal, and a mobile data switch in the Omarchy bar (ModemManager + NetworkManager).",
+  "description": "Cellular modem status, LTE signal, mobile data and roaming switches, speed test, and USSD in the Omarchy bar (ModemManager + NetworkManager).",
   "kinds": [
     "bar-widget"
   ],
@@ -20,7 +20,8 @@
     "defaultSection": "right",
     "defaults": {
       "refreshIntervalSec": 10,
-      "hideWithoutModem": true
+      "hideWithoutModem": true,
+      "balanceCode": ""
     },
     "schema": [
       {
@@ -37,6 +38,12 @@
         "type": "boolean",
         "label": "Hide when no modem is present",
         "defaultValue": true
+      },
+      {
+        "key": "balanceCode",
+        "type": "string",
+        "label": "Balance USSD code (e.g. *111#)",
+        "defaultValue": ""
       }
     ]
   }

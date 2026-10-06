@@ -84,6 +84,43 @@ Panel {
 
   function toggleData() { setData(!info.active) }
 
+  // gsm.home-only=yes forbids mobile data while roaming; it applies on the
+  // next activation, so an active connection is brought up again.
+  function setDataRoaming(on) {
+    if (busy || !info.connection) return
+    busy = true
+    lastError = ""
+    actionProc.command = ["bash", "-c",
+      'nmcli connection modify id "$1" gsm.home-only "$2" && ' +
+      'if [ "$3" = yes ]; then nmcli --wait 60 connection up id "$1"; fi',
+      "lte-roaming", info.connection, on ? "no" : "yes", info.active ? "yes" : "no"]
+    actionProc.running = true
+  }
+
+  // ---------- USSD (bin/lte-ussd: temporarily uses 3G, where the CS domain is available) ----------
+  property bool ussdBusy: false
+  property bool ussdActive: false
+  property string ussdReply: ""
+  property string ussdError: ""
+  readonly property string ussdPath: decodeURIComponent(Qt.resolvedUrl("bin/lte-ussd").toString().replace(/^file:\/\//, ""))
+  readonly property string balanceCode: String(setting("balanceCode", "") || "")
+
+  function runUssd(args) {
+    if (ussdBusy || !present) return
+    ussdBusy = true
+    ussdError = ""
+    ussdProc.command = [ussdPath].concat(args)
+    ussdProc.running = true
+  }
+
+  function sendUssd(text) {
+    var value = String(text || "").trim()
+    if (!value) return
+    runUssd(ussdActive ? ["--respond", value] : [value])
+  }
+
+  function cancelUssd() { runUssd(["--cancel"]) }
+
   // ---------- Speed test over the modem interface ----------
   property bool stOpen: false
   property bool stRunning: false
@@ -219,6 +256,23 @@ Panel {
       }
       root.stExpectedStop = false
       root.finishPhase()
+    }
+  }
+
+  Process {
+    id: ussdProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var r = {}
+        try { r = JSON.parse(String(text || "{}")) } catch (e) { r = { ok: false, error: "USSD helper failed" } }
+        if (r.ok) root.ussdReply = String(r.reply || "").trim()
+        root.ussdActive = !!r.sessionActive
+        root.ussdError = String(r.error || "")
+        root.ussdBusy = false
+        ussdField.text = ""
+        root.refresh()
+      }
     }
   }
 
@@ -420,6 +474,138 @@ Panel {
           InfoPair { label: "Connection"; value: root.info.connection ? root.info.connection + (root.info.interface ? " · " + root.info.interface : "") : "no GSM profile" }
           InfoPair { label: "Connect at boot"; value: root.info.connection ? (root.info.autoconnect ? "yes" : "no") : "—" }
           InfoPair { label: "Modem"; value: root.info.model || "—" }
+        }
+
+        // ---------- Data roaming ----------
+        Item {
+          visible: root.present && !!root.info.connection
+          width: parent.width
+          implicitHeight: roamingSwitch.implicitHeight
+
+          InfoLabel {
+            text: "Data roaming" + (root.info.registration === "roaming" ? " (roaming now)" : "")
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          ToggleSwitch {
+            id: roamingSwitch
+            checked: !!root.info.dataRoaming
+            busy: root.busy
+            foreground: root.bar.foreground
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            onToggled: root.setDataRoaming(!root.info.dataRoaming)
+          }
+        }
+
+        PanelSeparator {
+          visible: root.present
+          foreground: root.bar.foreground
+        }
+
+        // ---------- USSD ----------
+        Column {
+          visible: root.present
+          width: parent.width
+          spacing: Style.space(8)
+
+          PanelSectionHeader {
+            text: root.ussdActive ? "USSD · MENU" : "USSD"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            TextField {
+              id: ussdField
+              width: parent.width - sendButton.width - (balanceButton.visible ? balanceButton.width + parent.spacing : 0) - parent.spacing
+              placeholderText: root.ussdActive ? "Reply to the menu" : "*100#"
+              enabled: !root.ussdBusy
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.body
+              foreground: root.bar.foreground
+              onAccepted: root.sendUssd(text)
+            }
+
+            Button {
+              id: sendButton
+              text: root.ussdBusy ? "…" : "Send"
+              enabled: !root.ussdBusy
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              anchors.verticalCenter: ussdField.verticalCenter
+              onClicked: root.sendUssd(ussdField.text)
+            }
+
+            Button {
+              id: balanceButton
+              visible: root.balanceCode !== "" && !root.ussdActive
+              text: "Balance"
+              enabled: !root.ussdBusy
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              anchors.verticalCenter: ussdField.verticalCenter
+              onClicked: root.runUssd([root.balanceCode])
+            }
+          }
+
+          Text {
+            visible: root.ussdBusy
+            width: parent.width
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: "Switching to 3G and waiting for the network… (up to a minute)"
+            color: root.bar.foreground
+            opacity: 0.6
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Text {
+            visible: root.ussdReply !== "" && !root.ussdBusy
+            width: parent.width
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: root.ussdReply
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Text {
+            visible: root.ussdError !== "" && !root.ussdBusy
+            width: parent.width
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: root.ussdError
+            color: root.bar.urgent
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Button {
+            visible: root.ussdActive && !root.ussdBusy
+            text: "End session"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            fontSize: Style.font.bodySmall
+            bordered: true
+            horizontalPadding: Style.spacing.controlPaddingX
+            verticalPadding: Style.spacing.controlPaddingY
+            onClicked: root.cancelUssd()
+          }
         }
 
         Text {

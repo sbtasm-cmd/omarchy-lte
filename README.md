@@ -6,6 +6,8 @@ ModemManager and NetworkManager.
 - **Bar icon:** 1–3 signal bars computed from the real LTE RSRP. Many modems report 0% "signal quality" on LTE, so the icon doesn't use that value.
 - **Popup:** operator and access technology, registration, a signal bar, RSRP/RSRQ/SNR, the IP address, the active NetworkManager profile, whether it connects at boot, the modem model, and a **mobile data** switch.
 - **Mobile data switch:** also sets the profile's `autoconnect` flag, so the on/off state survives a reboot.
+- **Data roaming switch:** sets the profile's `gsm.home-only`.
+- **USSD:** an input field plus an optional **Balance** button (`balanceCode` setting), with interactive menus supported. Many networks register a data-centric LTE modem as "SMS only", which leaves it without the CS domain, so USSD fails on LTE. `bin/lte-ussd` temporarily restricts the modem to 3G, waits for stable registration, sends the request (with retries), and then forces LTE reselection and restores the original modes.
 - **Speed test (`󰓅`):** the same dials as the Omarchy Wi-Fi speed test (fast.com, 5 s each way), with all traffic forced through the modem interface, so it measures the mobile link even while Wi-Fi is the default route. One run uses roughly 10–20 MB of mobile data.
 - **Clicks:** left opens the popup, right toggles mobile data, middle refreshes.
 
@@ -37,6 +39,7 @@ right section of the bar. Move it with `omarchy bar move xmm7360.lte ...`.
 |---|---|---|
 | `refreshIntervalSec` | `10` | Refresh interval while the popup is closed (3 s while open) |
 | `hideWithoutModem` | `true` | Hide the widget when ModemManager sees no modem |
+| `balanceCode` | `""` | USSD code for the Balance button, e.g. `*111#`; the button is hidden while empty |
 
 ## License
 
