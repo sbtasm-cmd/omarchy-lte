@@ -94,8 +94,8 @@ Panel {
   // Opens (or focuses) a terminal following the modem log.
   function openLogs() {
     close()
-    logsProc.command = ["omarchy-launch-or-focus-tui", "--app-id=org.omarchy.lte-logs", logsPath]
-    logsProc.running = true
+    // Detached: a Process-owned child would be torn down with the Process.
+    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=org.omarchy.lte-logs", logsPath])
   }
 
   function setData(on) { setLteMode(on ? "data" : "network") }
@@ -278,8 +278,6 @@ Panel {
       }
     }
   }
-
-  Process { id: logsProc }
 
   Process {
     id: trafficProc
