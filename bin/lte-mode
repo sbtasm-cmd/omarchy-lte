@@ -17,6 +17,8 @@ HEAL_INTERVAL=600   # seconds between automatic power cycles
 
 conn="${LTE_CONNECTION:-$(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="gsm"{print $1; exit}')}"
 
+log() { logger -t lte-mode -- "$*"; }
+
 registration() { mmcli -m any -J 2>/dev/null | python3 -c 'import json,sys
 try: print(json.load(sys.stdin)["modem"]["3gpp"]["registration-state"])
 except Exception: print("")'; }
@@ -31,6 +33,7 @@ wait_registered() {  # wait_registered <seconds>
 }
 
 power_cycle() {
+  log "power-cycling the modem (registration: $(registration))"
   mkdir -p "$STATE_DIR"; date +%s > "$HEAL_STAMP"
   mmcli -m any --disable >/dev/null 2>&1
   mmcli -m any --set-power-state-low >/dev/null 2>&1
@@ -43,6 +46,8 @@ data_down() {
   nmcli connection modify id "$conn" connection.autoconnect no 2>/dev/null || echo "Couldn't save the autoconnect setting" >&2
   nmcli connection down id "$conn" >/dev/null 2>&1 || true
 }
+
+[[ -n ${1:-} ]] && log "mode: $1"
 
 case "${1:-}" in
   off)

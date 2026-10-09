@@ -89,6 +89,15 @@ Panel {
     actionProc.running = true
   }
 
+  readonly property string logsPath: decodeURIComponent(Qt.resolvedUrl("bin/lte-logs").toString().replace(/^file:\/\//, ""))
+
+  // Opens (or focuses) a terminal following the modem log.
+  function openLogs() {
+    close()
+    logsProc.command = ["omarchy-launch-or-focus-tui", "--app-id=org.omarchy.lte-logs", logsPath]
+    logsProc.running = true
+  }
+
   function setData(on) { setLteMode(on ? "data" : "network") }
 
   function toggleData() { setLteMode(lteMode === "data" ? "network" : "data") }
@@ -269,6 +278,8 @@ Panel {
       }
     }
   }
+
+  Process { id: logsProc }
 
   Process {
     id: trafficProc
@@ -469,6 +480,19 @@ Panel {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(8)
+
+            Button {
+              id: logsAction
+              iconText: String.fromCodePoint(0xf0219)
+              tooltipText: "Modem log (ModemManager, NetworkManager, kernel)"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              iconSize: Style.font.subtitle * 1.5
+              horizontalPadding: Style.space(5)
+              verticalPadding: Style.space(2)
+              anchors.verticalCenter: parent.verticalCenter
+              onClicked: root.openLogs()
+            }
 
             Button {
               id: speedAction

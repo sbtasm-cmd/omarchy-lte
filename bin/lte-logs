@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Live modem log for this boot: everything from ModemManager, plus the
+# modem-related lines from NetworkManager and the kernel (iosm/wwan), the
+# FCC unlock, the resume reset, and this widget's own actions (lte-mode).
+#
+#   lte-logs           follow (Ctrl+C to quit)
+#   lte-logs --print   print the recent log and exit
+set -uo pipefail
+
+lines=${LTE_LOG_LINES:-300}
+follow=(-f)
+[[ ${1:-} == --print ]] && follow=()
+
+filter='ModemManager\[|lte-mode|wwan-fcc-unlock|wwan-resume-reset|iosm|wwan|gsm|modem|lifecell|bearer|ppp'
+
+echo -e "\e[1mModem log\e[0m (this boot; ModemManager, NetworkManager, kernel, lte-mode). Ctrl+C to quit.\n"
+SYSTEMD_COLORS=1 journalctl -b --no-pager -o short-iso -n "$lines" "${follow[@]}" \
+  _SYSTEMD_UNIT=ModemManager.service + \
+  _SYSTEMD_UNIT=NetworkManager.service + \
+  _SYSTEMD_UNIT=wwan-resume-reset.service + \
+  _TRANSPORT=kernel + \
+  SYSLOG_IDENTIFIER=wwan-fcc-unlock + \
+  SYSLOG_IDENTIFIER=lte-mode \
+  | grep --line-buffered -iE "$filter"
