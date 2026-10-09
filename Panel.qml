@@ -22,12 +22,14 @@ Panel {
   readonly property bool hideWithoutModem: setting("hideWithoutModem", true) !== false
   readonly property bool present: info.present === true
   readonly property bool connected: info.state === "connected"
+  // "home", "roaming", and their "-sms-only" variants (LTE without a CS domain)
+  readonly property bool registered: /^(home|roaming)/.test(String(info.registration || ""))
   readonly property bool shown: present || !hideWithoutModem
   readonly property string helperPath: decodeURIComponent(Qt.resolvedUrl("bin/lte-status").toString().replace(/^file:\/\//, ""))
 
   // Nerd Font cellular glyphs: outline (no signal), then 1-3 bars.
   function signalIcon() {
-    if (!present || !connected && info.registration !== "home" && info.registration !== "roaming") return String.fromCodePoint(0xf08bf)
+    if (!present || !connected && !registered) return String.fromCodePoint(0xf08bf)
     var q = info.quality
     if (q === null || q === undefined) return String.fromCodePoint(0xf08be)
     if (q >= 60) return String.fromCodePoint(0xf08be)
@@ -45,7 +47,8 @@ Panel {
 
   function stateLabel() {
     if (!present) return "No modem"
-    if (busy) return connected ? "Disconnecting…" : "Connecting…"
+    if (busy) return pendingMode === "off" ? "Turning off…" : pendingMode === "network" ? "Joining network…" : "Connecting…"
+    if (lteMode === "off") return "Off"
     var s = String(info.state || "")
     if (s === "failed") return "Failed (" + (info.failedReason || "unknown") + ")"
     return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Unknown"
@@ -69,21 +72,26 @@ Panel {
     if (!statusProc.running) statusProc.running = true
   }
 
-  // Mobile data on/off also flips the profile's autoconnect flag, so the
-  // choice survives a reboot (NetworkManager would otherwise bring an
-  // autoconnect profile back up at boot).
-  function setData(on) {
-    if (busy || !info.connection) return
+  // Three states (bin/lte-mode): "off" = WWAN radio off (NetworkManager keeps it
+  // across reboots), "network" = registered without mobile data, "data" =
+  // connected. Data on/off also flips the profile's autoconnect flag, so the
+  // choice survives a reboot.
+  readonly property string modePath: decodeURIComponent(Qt.resolvedUrl("bin/lte-mode").toString().replace(/^file:\/\//, ""))
+  readonly property string lteMode: info.wwanRadio === false ? "off" : (info.active ? "data" : "network")
+  property string pendingMode: ""
+
+  function setLteMode(mode) {
+    if (busy || mode === lteMode) return
     busy = true
+    pendingMode = mode
     lastError = ""
-    actionProc.command = ["bash", "-c",
-      'nmcli connection modify id "$1" connection.autoconnect "$2" || echo "Couldn\'t save the autoconnect setting" >&2; ' +
-      'nmcli --wait 60 connection "$3" id "$1"',
-      "lte-data", info.connection, on ? "yes" : "no", on ? "up" : "down"]
+    actionProc.command = [modePath, mode]
     actionProc.running = true
   }
 
-  function toggleData() { setData(!info.active) }
+  function setData(on) { setLteMode(on ? "data" : "network") }
+
+  function toggleData() { setLteMode(lteMode === "data" ? "network" : "data") }
 
   // gsm.home-only=yes forbids mobile data while roaming; it applies on the
   // next activation, so an active connection is brought up again.
@@ -448,7 +456,7 @@ Panel {
               width: parent.width
               textFormat: Text.PlainText
               elide: Text.ElideRight
-              text: root.stateLabel() + (root.info.registration === "roaming" ? " · roaming" : "")
+              text: root.stateLabel() + (String(root.info.registration || "").indexOf("roaming") === 0 ? " · roaming" : "")
               color: root.bar.foreground
               opacity: 0.7
               font.family: root.bar.fontFamily
@@ -476,14 +484,33 @@ Panel {
               onClicked: root.openSpeedTest()
             }
 
-            ToggleSwitch {
-              id: dataSwitch
-              visible: root.present && !!root.info.connection
-              checked: !!root.info.active
-              busy: root.busy
-              foreground: root.bar.foreground
+            Row {
+              id: modeSwitch
+              visible: root.present
+              spacing: 0
               anchors.verticalCenter: parent.verticalCenter
-              onToggled: root.toggleData()
+
+              Repeater {
+                model: [
+                  { key: "off", label: "Off", tip: "Modem off: not on the network" },
+                  { key: "network", label: "Net", tip: "On the network (SMS, USSD), no mobile data" },
+                  { key: "data", label: "Data", tip: "On the network with mobile data" }
+                ]
+                Button {
+                  required property var modelData
+                  text: root.busy && root.pendingMode === modelData.key ? "…" : modelData.label
+                  tooltipText: modelData.tip
+                  active: (root.busy ? root.pendingMode : root.lteMode) === modelData.key
+                  enabled: !root.busy && (modelData.key !== "data" || !!root.info.connection)
+                  foreground: root.bar.foreground
+                  fontFamily: root.bar.fontFamily
+                  fontSize: Style.font.bodySmall
+                  bordered: true
+                  horizontalPadding: Style.space(7)
+                  verticalPadding: Style.space(3)
+                  onClicked: root.setLteMode(modelData.key)
+                }
+              }
             }
           }
         }
@@ -585,7 +612,7 @@ Panel {
           implicitHeight: roamingSwitch.implicitHeight
 
           InfoLabel {
-            text: "Data roaming" + (root.info.registration === "roaming" ? " (roaming now)" : "")
+            text: "Data roaming" + (String(root.info.registration || "").indexOf("roaming") === 0 ? " (roaming now)" : "")
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
           }

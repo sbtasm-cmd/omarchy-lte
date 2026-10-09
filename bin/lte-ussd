@@ -108,7 +108,7 @@ def restore_modes(path, saved=None):
         os.unlink(STATE_FILE)
     if "4g" in saved["allowed"].split("|"):
         if set_modes(path, "4g", None) is None:
-            wait_for(path, lambda reg, techs: reg in ("home", "roaming") and "lte" in techs, LTE_WAIT_SEC)
+            wait_for(path, lambda reg, techs: reg.startswith(("home", "roaming")) and "lte" in techs, LTE_WAIT_SEC)
     return set_modes(path, saved["allowed"], saved.get("preferred"))
 
 
@@ -146,7 +146,7 @@ def switch_to_3g(path, info):
         m = modem_info(path)
         reg = (m.get("3gpp") or {}).get("registration-state", "")
         techs = (m.get("generic") or {}).get("access-technologies") or []
-        stable = stable + 1 if reg in ("home", "roaming") and any(t in TWO_G_THREE_G for t in techs) else 0
+        stable = stable + 1 if reg.startswith(("home", "roaming")) and any(t in TWO_G_THREE_G for t in techs) else 0
         if stable >= STABLE_POLLS:
             return None
     restore_modes(path)

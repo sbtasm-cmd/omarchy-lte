@@ -20,6 +20,8 @@ SIGNAL_RATE = "15"
 USSD_STATE = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
                           "omarchy-lte", "ussd-modes.json")
 STALE_USSD_SEC = 180
+IDLE_SINCE = os.path.join(os.path.dirname(USSD_STATE), "idle-since")
+IDLE_HEAL_SEC = 60
 
 
 def run(*cmd):
@@ -81,8 +83,31 @@ def recover_stale_ussd():
                      start_new_session=True)
 
 
+def maybe_heal(status):
+    """The modem can stay idle (not registered) after boot or enable while the
+    radio is on, because the protocol stack didn't come up. After a minute of
+    that, let lte-mode heal power-cycle it (lte-mode rate-limits itself)."""
+    idle = status.get("wwanRadio") and status.get("registration") == "idle"
+    if not idle or run("pgrep", "-f", "bin/lte-ussd"):
+        try:
+            os.unlink(IDLE_SINCE)
+        except OSError:
+            pass
+        return
+    try:
+        since = os.path.getmtime(IDLE_SINCE)
+    except OSError:
+        os.makedirs(os.path.dirname(IDLE_SINCE), exist_ok=True)
+        open(IDLE_SINCE, "w").close()
+        return
+    if time.time() - since >= IDLE_HEAL_SEC and not run("pgrep", "-f", "bin/lte-mode"):
+        helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lte-mode")
+        subprocess.Popen([helper, "heal"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+
+
 def main():
-    status = {"present": False}
+    status = {"present": False, "wwanRadio": run("nmcli", "radio", "wwan").strip() == "enabled"}
     try:
         status["traffic"] = lte_traffic.update()
     except OSError:
@@ -147,6 +172,7 @@ def main():
             break
     status.update({"ip": "" if ip == "--" else ip, "interface": "" if iface == "--" else iface})
 
+    maybe_heal(status)
     print(json.dumps(status))
 
 

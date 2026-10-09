@@ -4,8 +4,8 @@ An [Omarchy](https://omarchy.org/) bar widget for cellular modems, built on
 ModemManager and NetworkManager.
 
 - **Bar icon:** 1–3 signal bars computed from the real LTE RSRP. Many modems report 0% "signal quality" on LTE, so the icon doesn't use that value.
-- **Popup:** operator and access technology, registration, a signal bar, RSRP/RSRQ/SNR, the IP address, the active NetworkManager profile, whether it connects at boot, the modem model, and a **mobile data** switch.
-- **Mobile data switch:** also sets the profile's `autoconnect` flag, so the on/off state survives a reboot.
+- **Popup:** operator and access technology, registration, a signal bar, RSRP/RSRQ/SNR, the IP address, the active NetworkManager profile, whether it connects at boot, the modem model, and a three-state **Off / Net / Data** switch.
+- **Off / Net / Data switch** (`bin/lte-mode`): **Off** turns the modem off (NetworkManager WWAN radio off, kept across reboots); **Net** keeps it registered for SMS and USSD without mobile data; **Data** connects. It also sets the profile's `autoconnect`, so the choice survives a reboot. If the modem stays idle (not registered) for a minute while the radio is on, which happens after some boots, the widget power-cycles it once (at most every 10 minutes) so it registers.
 - **Data roaming switch:** sets the profile's `gsm.home-only`.
 - **Traffic counter:** received, sent, and total mobile data since the last reset, with a **Reset** button (click twice to confirm). It survives reboots and modem resets: `bin/lte_traffic.py` keeps a running total in `~/.local/state/omarchy-lte/traffic.json` and adds only the increase in the `wwan0` kernel counters, treating a counter restart (new boot, recreated interface) as new traffic. The total also appears in the icon tooltip. `bin/lte-traffic reset` resets it from the command line.
 - **Network mode:** Auto (3G+4G, prefer 4G), 4G only, or 3G only, through ModemManager.
