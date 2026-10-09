@@ -61,6 +61,7 @@ Panel {
     if (techLabel()) parts.push(techLabel())
     if (info.rsrp !== null && info.rsrp !== undefined) parts.push(info.rsrp + " dBm")
     parts.push(connected ? "connected" : String(info.state || ""))
+    if (info.traffic && info.traffic.total > 0) parts.push("Σ " + formatBytes(info.traffic.total))
     return parts.join(" · ")
   }
 
@@ -95,6 +96,35 @@ Panel {
       'if [ "$3" = yes ]; then nmcli --wait 60 connection up id "$1"; fi',
       "lte-roaming", info.connection, on ? "no" : "yes", info.active ? "yes" : "no"]
     actionProc.running = true
+  }
+
+  // ---------- Traffic counter (bin/lte_traffic.py, persisted across reboots) ----------
+  property bool trafficConfirm: false
+  readonly property string trafficPath: decodeURIComponent(Qt.resolvedUrl("bin/lte-traffic").toString().replace(/^file:\/\//, ""))
+
+  function formatBytes(n) {
+    n = Number(n) || 0
+    var units = ["B", "KB", "MB", "GB", "TB"]
+    var i = 0
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++ }
+    return (i === 0 ? n.toFixed(0) : n.toFixed(n < 10 ? 2 : 1)) + " " + units[i]
+  }
+
+  function formatSince(ts) {
+    // "2026-10-09T13:13:54+0300" -> "09.10.2026 13:13"
+    var m = String(ts || "").match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/)
+    return m ? m[3] + "." + m[2] + "." + m[1] + " " + m[4] + ":" + m[5] : "—"
+  }
+
+  function resetTraffic() {
+    if (!trafficConfirm) {
+      trafficConfirm = true
+      trafficConfirmTimer.restart()
+      return
+    }
+    trafficConfirm = false
+    trafficProc.command = [trafficPath, "reset"]
+    trafficProc.running = true
   }
 
   // ---------- Network mode ----------
@@ -230,6 +260,17 @@ Panel {
         try { root.info = JSON.parse(String(text || "{}")) } catch (e) {}
       }
     }
+  }
+
+  Process {
+    id: trafficProc
+    onExited: root.refresh()
+  }
+
+  Timer {
+    id: trafficConfirmTimer
+    interval: 4000
+    onTriggered: root.trafficConfirm = false
   }
 
   Process {
@@ -489,6 +530,52 @@ Panel {
           InfoPair { label: "Connection"; value: root.info.connection ? root.info.connection + (root.info.interface ? " · " + root.info.interface : "") : "no GSM profile" }
           InfoPair { label: "Connect at boot"; value: root.info.connection ? (root.info.autoconnect ? "yes" : "no") : "—" }
           InfoPair { label: "Modem"; value: root.info.model || "—" }
+        }
+
+        // ---------- Traffic ----------
+        PanelSeparator {
+          visible: !!root.info.traffic
+          foreground: root.bar.foreground
+        }
+
+        Column {
+          visible: !!root.info.traffic
+          width: parent.width
+          spacing: Style.space(6)
+
+          Item {
+            width: parent.width
+            implicitHeight: Math.max(trafficHeader.implicitHeight, trafficReset.implicitHeight)
+
+            PanelSectionHeader {
+              id: trafficHeader
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "TRAFFIC  ·  since " + root.formatSince(root.info.traffic ? root.info.traffic.since : "")
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+
+            Button {
+              id: trafficReset
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.trafficConfirm ? "Confirm reset" : "Reset"
+              tooltipText: "Zero the traffic counter"
+              active: root.trafficConfirm
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.space(2)
+              onClicked: root.resetTraffic()
+            }
+          }
+
+          InfoPair { label: "↓ Received"; value: root.formatBytes(root.info.traffic ? root.info.traffic.rx : 0) }
+          InfoPair { label: "↑ Sent"; value: root.formatBytes(root.info.traffic ? root.info.traffic.tx : 0) }
+          InfoPair { label: "Σ Total"; value: root.formatBytes(root.info.traffic ? root.info.traffic.total : 0) }
         }
 
         // ---------- Data roaming ----------

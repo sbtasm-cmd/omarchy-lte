@@ -10,7 +10,11 @@ reads 0% on LTE for this modem.
 import json
 import os
 import subprocess
+import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lte_traffic  # noqa: E402
 
 SIGNAL_RATE = "15"
 USSD_STATE = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
@@ -79,6 +83,10 @@ def recover_stale_ussd():
 
 def main():
     status = {"present": False}
+    try:
+        status["traffic"] = lte_traffic.update()
+    except OSError:
+        status["traffic"] = None
     profiles, active, autoconnect = nm_connections()
     status["profiles"] = profiles
     status["connection"] = active or (profiles[0] if profiles else "")
