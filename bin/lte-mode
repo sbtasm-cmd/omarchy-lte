@@ -6,7 +6,7 @@
 #   lte-mode network    registered on the network (SMS, USSD), no mobile data
 #   lte-mode data       registered and connected
 #   lte-mode heal       if the modem sits idle (not registered) while the radio is on,
-#                       power-cycle it once so the protocol stack comes up again
+#                       request registration, or power-cycle it (at most every 10 min)
 #
 # The GSM profile is passed in LTE_CONNECTION, or the first GSM profile is used.
 set -uo pipefail
@@ -30,6 +30,21 @@ wait_registered() {  # wait_registered <seconds>
     sleep 2
   done
   return 1
+}
+
+# After enabling, the XMM7360 often sits "idle" until something requests an
+# attach (a data connect does). An explicit registration request does it too.
+register() {
+  log "requesting network registration (registration: $(registration))"
+  mmcli -m any --3gpp-register-home >/dev/null 2>&1
+}
+
+# ensure_registered: wait, then ask for registration, then power-cycle as a last resort
+ensure_registered() {
+  wait_registered 10 && return 0
+  register; wait_registered 30 && return 0
+  power_cycle; wait_registered 30 && return 0
+  register; wait_registered 30
 }
 
 power_cycle() {
@@ -57,19 +72,19 @@ case "${1:-}" in
   network)
     nmcli radio wwan on
     data_down
-    # The modem sometimes stays idle after enabling (the stack isn't up yet).
-    wait_registered 45 || { power_cycle; wait_registered 60 || echo "Modem isn't registered (no network?)" >&2; }
+    ensure_registered || echo "Modem isn't registered (no network?)" >&2
     ;;
   data)
     nmcli radio wwan on
     [[ -n $conn ]] || { echo "No GSM connection profile" >&2; exit 1; }
-    wait_registered 45 || power_cycle
+    wait_registered 10 || { register; wait_registered 20; } || true   # connecting also requests an attach
     nmcli connection modify id "$conn" connection.autoconnect yes 2>/dev/null || echo "Couldn't save the autoconnect setting" >&2
     nmcli --wait 90 connection up id "$conn"
     ;;
   heal)
     [[ $(nmcli radio wwan) == enabled ]] || exit 0
     case "$(registration)" in home*|roaming*|"") exit 0 ;; esac
+    register; wait_registered 30 && exit 0
     last=$(cat "$HEAL_STAMP" 2>/dev/null || echo 0)
     (( $(date +%s) - last < HEAL_INTERVAL )) && exit 0
     power_cycle

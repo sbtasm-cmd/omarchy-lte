@@ -21,7 +21,7 @@ USSD_STATE = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~
                           "omarchy-lte", "ussd-modes.json")
 STALE_USSD_SEC = 180
 IDLE_SINCE = os.path.join(os.path.dirname(USSD_STATE), "idle-since")
-IDLE_HEAL_SEC = 60
+IDLE_HEAL_SEC = 20
 
 
 def run(*cmd):
@@ -85,8 +85,9 @@ def recover_stale_ussd():
 
 def maybe_heal(status):
     """The modem can stay idle (not registered) after boot or enable while the
-    radio is on, because the protocol stack didn't come up. After a minute of
-    that, let lte-mode heal power-cycle it (lte-mode rate-limits itself)."""
+    radio is on, waiting for an attach request. After 20 s of that, let
+    lte-mode heal request registration (and power-cycle it if that fails;
+    lte-mode rate-limits the power cycles)."""
     idle = status.get("wwanRadio") and status.get("registration") == "idle"
     if not idle or run("pgrep", "-f", "bin/lte-ussd"):
         try:
