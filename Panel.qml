@@ -65,11 +65,13 @@ Panel {
     if (info.rsrp !== null && info.rsrp !== undefined) parts.push(info.rsrp + " dBm")
     parts.push(connected ? "connected" : String(info.state || ""))
     if (info.traffic && info.traffic.total > 0) parts.push("Σ " + formatBytes(info.traffic.total))
+    if (hotspot.active) parts.push("hotspot: " + hotspot.clients + (hotspot.clients === 1 ? " client" : " clients"))
     return parts.join(" · ")
   }
 
   function refresh() {
     if (!statusProc.running) statusProc.running = true
+    if (!hotspotStatusProc.running) hotspotStatusProc.running = true
   }
 
   // Three states (bin/lte-mode): "off" = WWAN radio off (NetworkManager keeps it
@@ -143,6 +145,55 @@ Panel {
     trafficProc.command = [trafficPath, "reset"]
     trafficProc.running = true
   }
+
+  // ---------- Wi-Fi hotspot (bin/lte-hotspot: NetworkManager access point sharing the modem) ----------
+  // The SSID and password live in the NetworkManager profile; the form below
+  // asks for them the first time, prefilled with a suggestion.
+  property var hotspot: ({ configured: false, active: false, ssid: "", password: "", clients: 0, iface: "" })
+  property bool hotspotBusy: false
+  property string hotspotPending: ""     // "on" | "off" while busy
+  property string hotspotError: ""
+  property bool hotspotFormOpen: false
+  property bool hotspotShowPassword: false
+  readonly property string hotspotPath: decodeURIComponent(Qt.resolvedUrl("bin/lte-hotspot").toString().replace(/^file:\/\//, ""))
+
+  function setHotspot(on) {
+    if (hotspotBusy || busy) return
+    if (on && !hotspot.configured) { openHotspotForm(); return }
+    runHotspot(on ? "on" : "off", [hotspotPath, on ? "on" : "off"])
+  }
+
+  function openHotspotForm() {
+    hotspotError = ""
+    hotspotFormOpen = true
+    if (hotspot.configured) {
+      hotspotSsidField.text = hotspot.ssid
+      hotspotPassField.text = hotspot.password
+    } else {
+      hotspotSsidField.text = ""
+      hotspotPassField.text = ""
+      hotspotDefaultsProc.running = true
+    }
+  }
+
+  function saveHotspot() {
+    var ssid = hotspotSsidField.text.trim()
+    var pass = hotspotPassField.text
+    if (ssid === "") { hotspotError = "Enter a network name"; return }
+    if (pass.length < 8 || pass.length > 63) { hotspotError = "The password must be 8–63 characters"; return }
+    // Save, then (re)start so the new name/password apply right away.
+    runHotspot("on", ["bash", "-c", '"$0" configure "$1" "$2" >/dev/null || exit 1; "$0" on', hotspotPath, ssid, pass])
+  }
+
+  function runHotspot(pending, command) {
+    hotspotBusy = true
+    hotspotPending = pending
+    hotspotError = ""
+    hotspotActionProc.command = command
+    hotspotActionProc.running = true
+  }
+
+  function copyText(t) { Quickshell.execDetached(["wl-copy", "--", t]) }
 
   // ---------- Network mode ----------
   readonly property string modeKey: info.allowedModes === "4g" ? "4g"
@@ -275,6 +326,48 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         try { root.info = JSON.parse(String(text || "{}")) } catch (e) {}
+      }
+    }
+  }
+
+  Process {
+    id: hotspotStatusProc
+    command: [root.hotspotPath, "status"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try { root.hotspot = JSON.parse(String(text || "{}")) } catch (e) {}
+      }
+    }
+  }
+
+  Process {
+    id: hotspotDefaultsProc
+    command: [root.hotspotPath, "defaults"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var d = {}
+        try { d = JSON.parse(String(text || "{}")) } catch (e) {}
+        if (hotspotSsidField.text === "") hotspotSsidField.text = d.ssid || ""
+        if (hotspotPassField.text === "") hotspotPassField.text = d.password || ""
+      }
+    }
+  }
+
+  Process {
+    id: hotspotActionProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var lines = String(text || "").trim().split("\n")
+        var r = {}
+        try { r = JSON.parse(lines[lines.length - 1] || "{}") } catch (e) { r = { ok: false, error: "Hotspot helper failed" } }
+        root.hotspotError = r.ok ? "" : String(r.error || "Hotspot helper failed")
+        if (r.ok) root.hotspotFormOpen = false
+        root.hotspotBusy = false
+        root.hotspotPending = ""
+        root.refresh()
       }
     }
   }
@@ -692,6 +785,171 @@ Panel {
           }
         }
 
+        // ---------- Wi-Fi hotspot ----------
+        PanelSeparator {
+          visible: root.present && root.hotspot.iface !== ""
+          foreground: root.bar.foreground
+        }
+
+        Column {
+          visible: root.present && root.hotspot.iface !== ""
+          width: parent.width
+          spacing: Style.space(8)
+
+          Item {
+            width: parent.width
+            implicitHeight: Math.max(hotspotHeader.implicitHeight, hotspotSwitch.implicitHeight)
+
+            PanelSectionHeader {
+              id: hotspotHeader
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.hotspot.active
+                ? "WI-FI HOTSPOT  ·  " + root.hotspot.clients + (root.hotspot.clients === 1 ? " client" : " clients")
+                : "WI-FI HOTSPOT"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+
+            Row {
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(8)
+
+              Button {
+                visible: root.hotspot.configured && !root.hotspotFormOpen
+                text: "Edit"
+                tooltipText: "Change the network name and password"
+                enabled: !root.hotspotBusy
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.font.bodySmall
+                bordered: true
+                horizontalPadding: Style.spacing.controlPaddingX
+                verticalPadding: Style.space(2)
+                anchors.verticalCenter: parent.verticalCenter
+                onClicked: root.openHotspotForm()
+              }
+
+              ToggleSwitch {
+                id: hotspotSwitch
+                checked: root.hotspotBusy ? root.hotspotPending === "on" : !!root.hotspot.active
+                busy: root.hotspotBusy
+                foreground: root.bar.foreground
+                anchors.verticalCenter: parent.verticalCenter
+                onToggled: root.setHotspot(!root.hotspot.active)
+              }
+            }
+          }
+
+          Text {
+            visible: !root.hotspotFormOpen && !root.hotspot.active && !root.hotspotBusy
+            width: parent.width
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: "Shares mobile data over Wi-Fi. The laptop's own Wi-Fi connection drops while sharing."
+            color: root.bar.foreground
+            opacity: 0.6
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          // Setup form: shown on first enable and by "Edit".
+          Column {
+            visible: root.hotspotFormOpen
+            width: parent.width
+            spacing: Style.space(6)
+
+            InfoLabel { text: "Network name" }
+            TextField {
+              id: hotspotSsidField
+              width: parent.width
+              maximumLength: 32
+              enabled: !root.hotspotBusy
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.body
+              foreground: root.bar.foreground
+              onAccepted: hotspotPassField.forceActiveFocus()
+            }
+
+            InfoLabel { text: "Password (8–63 characters)" }
+            TextField {
+              id: hotspotPassField
+              width: parent.width
+              maximumLength: 63
+              enabled: !root.hotspotBusy
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.body
+              foreground: root.bar.foreground
+              onAccepted: root.saveHotspot()
+            }
+
+            Row {
+              spacing: Style.space(6)
+
+              Button {
+                text: root.hotspotBusy ? "…" : (root.hotspot.configured ? "Save and restart" : "Save and start")
+                enabled: !root.hotspotBusy
+                active: true
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.font.bodySmall
+                bordered: true
+                horizontalPadding: Style.spacing.controlPaddingX
+                verticalPadding: Style.spacing.controlPaddingY
+                onClicked: root.saveHotspot()
+              }
+
+              Button {
+                text: "Cancel"
+                enabled: !root.hotspotBusy
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.font.bodySmall
+                bordered: true
+                horizontalPadding: Style.spacing.controlPaddingX
+                verticalPadding: Style.spacing.controlPaddingY
+                onClicked: { root.hotspotFormOpen = false; root.hotspotError = "" }
+              }
+            }
+          }
+
+          // Name and password, for typing them on the phone.
+          Column {
+            visible: root.hotspot.active && !root.hotspotFormOpen
+            width: parent.width
+            spacing: Style.space(6)
+
+            HotspotSecret { label: "Network"; value: root.hotspot.ssid; secret: false }
+            HotspotSecret { label: "Password"; value: root.hotspot.password; secret: !root.hotspotShowPassword }
+          }
+
+          Text {
+            visible: root.hotspotBusy
+            width: parent.width
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: root.hotspotPending === "on"
+              ? "Turning mobile data on and starting the hotspot… (the first time, the system asks for a password to open the firewall)"
+              : "Stopping the hotspot…"
+            color: root.bar.foreground
+            opacity: 0.6
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Text {
+            visible: root.hotspotError !== "" && !root.hotspotBusy
+            width: parent.width
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: root.hotspotError
+            color: root.bar.urgent
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+        }
+
         PanelSeparator {
           visible: root.present
           foreground: root.bar.foreground
@@ -837,6 +1095,60 @@ Panel {
     InfoLabel { text: label }
     Item { width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[2].implicitWidth - parent.spacing * 2); height: 1 }
     InfoValue { text: value }
+  }
+
+  // A label, a value (dotted when secret), and buttons to reveal and copy it.
+  component HotspotSecret: Item {
+    property string label: ""
+    property string value: ""
+    property bool secret: false
+
+    width: parent.width
+    implicitHeight: Math.max(secretLabel.implicitHeight, secretButtons.implicitHeight)
+
+    InfoLabel {
+      id: secretLabel
+      text: parent.label
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Row {
+      id: secretButtons
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(6)
+
+      InfoValue {
+        text: parent.parent.secret ? "•".repeat(parent.parent.value.length) : parent.parent.value
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Button {
+        visible: parent.parent.label === "Password"
+        iconText: String.fromCodePoint(root.hotspotShowPassword ? 0xf0209 : 0xf0208)
+        tooltipText: root.hotspotShowPassword ? "Hide" : "Show"
+        foreground: root.bar.foreground
+        fontFamily: root.bar.fontFamily
+        iconSize: Style.font.body
+        horizontalPadding: Style.space(4)
+        verticalPadding: Style.space(1)
+        anchors.verticalCenter: parent.verticalCenter
+        onClicked: root.hotspotShowPassword = !root.hotspotShowPassword
+      }
+
+      Button {
+        iconText: String.fromCodePoint(0xf018f)
+        tooltipText: "Copy"
+        foreground: root.bar.foreground
+        fontFamily: root.bar.fontFamily
+        iconSize: Style.font.body
+        horizontalPadding: Style.space(4)
+        verticalPadding: Style.space(1)
+        anchors.verticalCenter: parent.verticalCenter
+        onClicked: root.copyText(parent.parent.value)
+      }
+    }
   }
 
   component InfoLabel: Text {

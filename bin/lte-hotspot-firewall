@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run as root (pkexec) by lte-hotspot: let Wi-Fi clients get DHCP/DNS from the
+# laptop and route their traffic out through the modem. ufw keeps the rules.
+#
+#   lte-hotspot-firewall WIFI_IFACE MODEM_IFACE
+set -euo pipefail
+wifi=${1:?wifi interface}; modem=${2:?modem interface}
+for i in "$wifi" "$modem"; do
+  [[ $i =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || { echo "bad interface name: $i" >&2; exit 2; }
+done
+command -v ufw >/dev/null || exit 0
+ufw allow in on "$wifi" to any port 67 proto udp comment 'omarchy-lte hotspot DHCP' >/dev/null
+ufw allow in on "$wifi" to any port 53 comment 'omarchy-lte hotspot DNS' >/dev/null
+ufw route allow in on "$wifi" out on "$modem" comment 'omarchy-lte hotspot' >/dev/null
+echo ok
