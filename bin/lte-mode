@@ -78,8 +78,10 @@ case "${1:-}" in
     nmcli radio wwan on
     [[ -n $conn ]] || { echo "No GSM connection profile" >&2; exit 1; }
     wait_registered 10 || { register; wait_registered 20; } || true   # connecting also requests an attach
+    # Connect first: turning autoconnect on starts an activation of its own,
+    # which the explicit one would then cancel.
+    nmcli --wait 90 connection up id "$conn" || exit 1
     nmcli connection modify id "$conn" connection.autoconnect yes 2>/dev/null || echo "Couldn't save the autoconnect setting" >&2
-    nmcli --wait 90 connection up id "$conn"
     ;;
   heal)
     [[ $(nmcli radio wwan) == enabled ]] || exit 0
